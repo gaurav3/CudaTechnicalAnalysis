@@ -4,12 +4,39 @@
 
 #include <stdio.h>
 
-cudaError_t MovAvgWithCuda(float *result, const float *input, size_t size);
+cudaError_t MovAvgWithCuda(float *result, const float *input, size_t size, int avgWindowSize);
 
-__global__ void MovAvgKernel(float *result, const float *input)
+__global__ void MovAvgKernel(float *result, const float *input, int threadCount, int elementsCount, const int avgWindowSize)
 {
-    int i = threadIdx.x;
-    result[i] = input[i];
+    int idx = threadIdx.x;
+
+	int uniqueElementsForThread = elementsCount/ threadCount;
+	int maxIdxForThread = (idx+1)*uniqueElementsForThread + avgWindowSize;
+	if(idx == threadCount - 1) maxIdxForThread = elementsCount - 1;
+
+	float sum = 0;
+
+	//initialize first
+	for(int i=0; i<avgWindowSize; i++)
+	{
+		float element = (float)input[uniqueElementsForThread*idx + i]/(float)avgWindowSize;
+		sum += element;
+	}
+
+	int currentInd = uniqueElementsForThread*idx + avgWindowSize -1;
+	result[currentInd] = sum;
+
+	//run through
+	while(currentInd<maxIdxForThread)
+	{
+		currentInd++;
+	
+		sum -= input[currentInd - avgWindowSize]/(float)avgWindowSize;
+		
+		sum += input[currentInd]/(float)avgWindowSize;
+
+		result[currentInd] = sum;
+	}
 }
 
 int main()
@@ -17,7 +44,7 @@ int main()
     const int arraySize = 10000;
 
 	const int avgWindowSize = 15;
-
+	 
 	float a[arraySize] = {0};
 	for(int i=0; i<arraySize; i++)
 	{
@@ -27,7 +54,7 @@ int main()
     float result[arraySize] = { 0 };
 
     // Add vectors in parallel.
-    cudaError_t cudaStatus = MovAvgWithCuda(result, a, arraySize);
+    cudaError_t cudaStatus = MovAvgWithCuda(result, a, arraySize, avgWindowSize);
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "addWithCuda failed!");
         return 1;
@@ -41,21 +68,24 @@ int main()
         fprintf(stderr, "cudaDeviceReset failed!");
         return 1;
     }
+	
+	for(int i = 0; i< arraySize; i++ )
+	{
+		printf("%f \n", result[i]);
+	}
 
-	printf("AllGood");
 	getchar();
 
     return 0;
 }
 
 // Helper function for using CUDA to add vectors in parallel.
-cudaError_t MovAvgWithCuda(float *result, const float *input, size_t size)
+cudaError_t MovAvgWithCuda(float *result, const float *input, size_t size, int avgWindowSize)
 {
 	const int BLOCKS = 1;
 	const int THREADS = 256;
 
     float *dev_input = 0;
-	int dev_avgWindowSize = 0;
     float *dev_result = 0;
     cudaError_t cudaStatus;
 
@@ -87,7 +117,7 @@ cudaError_t MovAvgWithCuda(float *result, const float *input, size_t size)
     }
 
     // Launch a kernel on the GPU with one thread for each element.
-    MovAvgKernel<<<1, 256>>>(dev_result, dev_input);
+    MovAvgKernel<<<BLOCKS, THREADS>>>(dev_result, dev_input, THREADS, size, avgWindowSize);
 
     // cudaDeviceSynchronize waits for the kernel to finish, and returns
     // any errors encountered during the launch.
